@@ -95,7 +95,9 @@ exports.announce = function(req, res) {
     response['peers'] = [];
     for (var p in db[info_hash].peers) {
       var temp = {};
-      temp['peer id'] = p;
+      if (req.param('no_peer_id') === undefined && req.param('no_peer_id') != 1) {
+        temp['peer id'] = p;
+      }
       temp['ip'] = db[info_hash].peers[p].peer_ip;
       temp['port'] = db[info_hash].peers[p].port;
       response['peers'].push(temp);
