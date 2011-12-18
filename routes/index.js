@@ -51,31 +51,23 @@ exports.announce = function(req, res) {
     db[info_hash].complete = {};
   }
 
-  var peer_ip = req.connection.remoteAddress;
-  if ( db[info_hash].peers[peer_ip] === undefined) {
-    db[info_hash].peers[peer_ip] = {};
+  var peer_ip = req.param('ip') || req.connection.remoteAddress
+      peer_id = foo(req.param('peer_id'));
+      ;
+  if ( db[info_hash].peers[peer_id] === undefined) {
+    db[info_hash].peers[peer_id] = {};
   }
 
-  db[info_hash].peers[peer_ip].peer_id = foo(req.param('peer id'));
-  db[info_hash].peers[peer_ip].port = req.param('port') || 0;
-  db[info_hash].peers[peer_ip].peer_id = req.param('peer_id') || 0;
+  db[info_hash].peers[peer_id].port = req.param('port') || 0;
+  db[info_hash].peers[peer_id].peer_ip = peer_ip;
 
-  if (req.param('left') !== undefined && req.param('left') == 0 && db[info_hash].complete[peer_ip] === undefined) {
-    db[info_hash].complete[peer_ip] = '';
+  if (req.param('left') !== undefined && req.param('left') == 0 && db[info_hash].complete[peer_id] === undefined) {
+    db[info_hash].complete[peer_id] = '';
   }
 
   console.log(util.inspect(db));
   peers_count = Object.keys(db[info_hash].peers).length;
-  complete_count = Object.keys(db[info_hash].complete).length
-
-
-  var announce = {};
-  announce.peer_id = foo(req.param('peer_id'));
-  announce.port = req.param('port');
-  announce.uploaded = req.param('uploaded');
-  announce.downloaded = req.param('downloaded');
-  announce.left = req.param('left');
-//  console.log(util.inspect(announce));
+  complete_count = Object.keys(db[info_hash].complete).length;
 
   var response = {};
   response['interval'] = 10;
@@ -84,13 +76,27 @@ exports.announce = function(req, res) {
 
   if (req.param('compact') !== undefined || req.param('compact') == 0) {
     response['peers'] = '';
+    for (var p in db[info_hash].peers) {
+      var addr = []
+      var temp = p.split('.');
+      for ( var i = 0; i < temp.length; i++) {
+        var val = parseInt(temp[i]);
+        addr.push(val);
+      }
+      addr.push(peer_port >> 8);
+      addr.push(peer_port & 0xFF);
+
+      var buf = new Buffer(addr);
+      var s = buf.toString('binary', 0, 6);
+      response['peers'] += s;
+   }
   }
   else {
     response['peers'] = [];
     for (var p in db[info_hash].peers) {
       var temp = {};
-      temp['peer id'] = db[info_hash].peers[p].peer_id;
-      temp['ip'] = p;
+      temp['peer id'] = p;
+      temp['ip'] = db[info_hash].peers[p].peer_ip;
       temp['port'] = db[info_hash].peers[p].port;
       response['peers'].push(temp);
     }
@@ -98,7 +104,7 @@ exports.announce = function(req, res) {
 
 
   res.header('Content-Type', 'text/plain');
-  res.end(bencode.encode(response));
+  res.end(bencode.encode(response), 'binary');
 };
 
 
@@ -115,5 +121,5 @@ exports.scrape = function(req, res) {
   response['files'][info_hash]['incomplete'] = 5;
 
   res.header('Content-Type', 'text/plain');
-  res.end(bencode.encode(response));
+  res.end(bencode.encode(response), 'binary');
 };
