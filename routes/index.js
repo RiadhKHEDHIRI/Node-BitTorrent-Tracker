@@ -49,6 +49,7 @@ exports.announce = function(req, res) {
     , peer_ip = req.param('ip') || req.connection.remoteAddress
     , compact = req.param('compact') || '1'
     , no_peer_id = req.param('no_peer_id') || '0'
+    , numwant = parseInt(req.param('numwant')) || 50
     , seeders_count = 0
     , leechers_count = 0
     , peers_count = 0
@@ -63,7 +64,7 @@ exports.announce = function(req, res) {
 
   response['tracker id'] = 'Node BitTorrent Tracker';
   response['warning message'] = 'the tracker is running an experimental version';
-  response['interval'] = 10;
+  response['interval'] = 600;
 
   // handling some invalid requests
 
@@ -88,6 +89,11 @@ exports.announce = function(req, res) {
   // saving peer parameters
   rc.hmset('info_hash:' + info_hash + ':peer:' + peer_id, 'ip', peer_ip, 'port', peer_port);
 
+  // assigning some global metrics
+
+  rc.sadd('info_hashes', info_hash);
+  rc.sadd('peers', peer_id);
+
 
   // handling the 'event' param
 
@@ -99,7 +105,7 @@ exports.announce = function(req, res) {
       case 'stopped':
         rc.srem('peers', peer_id);
         if (req.param('left') !== undefined && req.param('left') == 0) {
-          rc.decr('seeders:' + info_hash);
+          rc.srem('seeders:' + info_hash, peer_id);
         }
         break;
     }
@@ -116,11 +122,6 @@ exports.announce = function(req, res) {
 
   if (compact == '1') response['peers'] = '';
   else response['peers'] = [];
-
-  // assigning some global metrics
-
-  rc.sadd('info_hashes', info_hash);
-  rc.sadd('peers', peer_id);
 
 
   // building the response body
@@ -196,6 +197,7 @@ exports.scrape = function(req, res) {
     });
   }
   else {
+    res.end(bencode.encode(''), 'binary');
   }
 };
 
