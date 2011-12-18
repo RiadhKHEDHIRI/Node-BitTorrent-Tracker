@@ -30,98 +30,173 @@ rc.on('error', function (err) {
 
 
 exports.index = function(req, res){
-  res.render('index', { title: 'Node.js BitTorrent Tracker' });
+  var torrents = 0, peers = 0;
+  rc.scard('info_hashes', function(err, reply) {
+    if (!err) torrents = reply;
+    rc.scard('peers', function(err, reply) {
+      if (!err) peers = reply;
+      res.render('index', {title: 'Node.js BitTorrent Tracker', torrents: torrents, peers: peers});
+    });
+  });
 };
-
-
-var db = {}; // a db emulation just to test the bittorrent protocol
-
-
 
 exports.announce = function(req, res) {
 
-  var info_hash = foo(req.param('info_hash'))
-      peer_port = req.param('port') || 0
-      ;
+  var response = {}
+    , info_hash = foo(req.param('info_hash'))
+    , peer_port = req.param('port') || 0
+    , peer_id = foo(req.param('peer_id')) || ''
+    , peer_ip = req.param('ip') || req.connection.remoteAddress
+    , compact = req.param('compact') || '1'
+    , no_peer_id = req.param('no_peer_id') || '0'
+    , seeders_count = 0
+    , leechers_count = 0
+    , peers_count = 0
+    , completed_count = 0
+  ;
 
-  if (db[info_hash] === undefined) {
-    console.log('db.info_hash === undefined');  
-    db[info_hash] = {};
-    db[info_hash].peers = {};
-    db[info_hash].complete = {};
-  }
+  res.header('Content-Type', 'text/plain');
 
-  var peer_ip = req.param('ip') || req.connection.remoteAddress
-      peer_id = foo(req.param('peer_id'));
-      ;
-  if ( db[info_hash].peers[peer_id] === undefined) {
-    db[info_hash].peers[peer_id] = {};
-  }
 
-  db[info_hash].peers[peer_id].port = req.param('port') || 0;
-  db[info_hash].peers[peer_id].peer_ip = peer_ip;
 
-  if (req.param('left') !== undefined && req.param('left') == 0 && db[info_hash].complete[peer_id] === undefined) {
-    db[info_hash].complete[peer_id] = '';
-  }
+  // global response parameters
 
-  console.log(util.inspect(db));
-  peers_count = Object.keys(db[info_hash].peers).length;
-  complete_count = Object.keys(db[info_hash].complete).length;
-
-  var response = {};
+  response['tracker id'] = 'Node BitTorrent Tracker';
+  response['warning message'] = 'the tracker is running an experimental version';
   response['interval'] = 10;
-  response['complete'] = complete_count;
-  response['incomplete'] = peers_count - complete_count;
 
-  if (req.param('compact') !== undefined || req.param('compact') == 0) {
-    response['peers'] = '';
-    for (var p in db[info_hash].peers) {
-      var addr = []
-      var temp = p.split('.');
-      for ( var i = 0; i < temp.length; i++) {
-        var val = parseInt(temp[i]);
-        addr.push(val);
-      }
-      addr.push(peer_port >> 8);
-      addr.push(peer_port & 0xFF);
+  // handling some invalid requests
 
-      var buf = new Buffer(addr);
-      var s = buf.toString('binary', 0, 6);
-      response['peers'] += s;
-   }
+  if (info_hash == '') {
+    response = {};
+    response['failure code'] = 101;
+    response['failure reason'] = 'info_hash is required';
+    res.end(bencode.encode(response), 'binary');
+    return;
   }
-  else {
-    response['peers'] = [];
-    for (var p in db[info_hash].peers) {
-      var temp = {};
-      if (req.param('no_peer_id') === undefined && req.param('no_peer_id') != 1) {
-        temp['peer id'] = p;
-      }
-      temp['ip'] = db[info_hash].peers[p].peer_ip;
-      temp['port'] = db[info_hash].peers[p].port;
-      response['peers'].push(temp);
+  else if (peer_id == '') {
+    response = {};
+    response['failure code'] = 102;
+    response['failure reason'] = 'peer_id is required';
+    res.end(bencode.encode(response), 'binary');
+    return;
+  }
+
+  // incrementing peers count;
+  rc.sadd('peers:' + info_hash, peer_id);
+
+  // saving peer parameters
+  rc.hmset('info_hash:' + info_hash + ':peer:' + peer_id, 'ip', peer_ip, 'port', peer_port);
+
+
+  // handling the 'event' param
+
+  if (req.param('event') !== undefined) {
+    switch (req.param('event')) {
+      case 'completed':
+        rc.hincrby('completed:' + info_hash, 1);
+        break;
+      case 'stopped':
+        rc.srem('peers', peer_id);
+        if (req.param('left') !== undefined && req.param('left') == 0) {
+          rc.decr('seeders:' + info_hash);
+        }
+        break;
     }
   }
 
+  // handling the seeders count
 
-  res.header('Content-Type', 'text/plain');
-  res.end(bencode.encode(response), 'binary');
+  if (req.param('left') !== undefined && req.param('left') == 0) {
+    rc.sadd('seeders:' + info_hash, peer_id);
+  }
+
+
+  // preparing the response['peers']
+
+  if (compact == '1') response['peers'] = '';
+  else response['peers'] = [];
+
+  // assigning some global metrics
+
+  rc.sadd('info_hashes', info_hash);
+  rc.sadd('peers', peer_id);
+
+
+  // building the response body
+  
+  rc.scard('seeders:' + info_hash, function(err, reply) {
+    if (!err) seeders_count = reply;
+    rc.scard('peers:' + info_hash, function(err, reply) {
+      if (!err) peers_count = reply;
+
+      rc.smembers('peers:' + info_hash, function(err, replies) {
+        if (err) throw err;
+        replies.forEach(function(p_id, i) {
+          rc.hgetall('info_hash:' + info_hash + ':peer:' + p_id, function(err, peer) {
+            if (err) throw err;
+            if (compact == '1') {
+              var addr = [], temp = peer['ip'].split('.');
+              for (var i = 0; i < temp.length; i++) {
+                var val = parseInt(temp[i]);
+                addr.push(val);
+              }
+              var temp_port = parseInt(peer['port']);
+              addr.push(temp_port >> 8);
+              addr.push(temp_port & 0xFF);
+              var buf = new Buffer(addr), s = buf.toString('binary');
+              response['peers'] += s;
+            }
+            else {
+              var temp = {};
+              if ( no_peer_id != 1 ) {
+                temp['peer id'] = p_id;
+              }
+              temp['ip'] = peer['ip'];
+              temp['port'] = parseInt(peer['port']);
+              response['peers'].push(temp);
+            }
+            if (i >= 50 || i >= peers_count || i >= numwant) {
+              response['complete'] = seeders_count;
+              response['incomplete'] = peers_count - seeders_count;
+              // console.log(util.inspect(response));
+              res.end(bencode.encode(response), 'binary');
+            }
+          });
+        });
+      });
+    });
+  });
 };
 
 
 
 exports.scrape = function(req, res) {
-//  console.log(util.inspect(req.param('info_hash')));
-  var info_hash = urlDecode(req.param('info_hash'));
-//  console.log(info_hash.length);
-  var response = {};
-  response['files'] = {};
-  response['files'][info_hash] = {};
-  response['files'][info_hash]['complete'] = 9;
-  response['files'][info_hash]['downloaded'] = 19;
-  response['files'][info_hash]['incomplete'] = 5;
 
   res.header('Content-Type', 'text/plain');
-  res.end(bencode.encode(response), 'binary');
+
+  var response = {};
+  response['files'] = {};
+
+  if (req.param('info_hash').length === undefined) {
+    var info_hash = foo(req.param('info_hash'));
+    rc.scard('seeders:' + info_hash, function (err, seeders_count) {
+      if (err) throw err;
+      rc.scard('peers:' + info_hash, function(err, peers_count) {
+        if (err) throw err;
+        rc.get('completed:' + info_hash, function(err, downloaded_count) {
+          if (err) throw err;
+          response['files'][info_hash] = {};
+          response['files'][info_hash]['complete'] = seeders_count;
+          response['files'][info_hash]['downloaded'] = downloaded_count;
+          response['files'][info_hash]['incomplete'] = peers_count - seeders_count;
+          res.end(bencode.encode(response), 'binary');
+        });
+      });
+    });
+  }
+  else {
+  }
 };
+
+
